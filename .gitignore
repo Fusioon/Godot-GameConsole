@@ -1,0 +1,25 @@
+# Misc
+logs/*
+src/Debug/*
+src/.vs/*
+
+# Binaries
+*.o
+*.os
+*.so
+*.obj
+*.pyc
+*.dblite
+*.pdb
+*.lib
+bin
+*.config
+*.creator
+*.creator.user
+*.files
+*.includes
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.idb
