@@ -6,11 +6,6 @@
 
 fusion::Console* fusion::pConsole = nullptr;
 
-void im_helpless()
-{
-	godot::Godot::print("FUCKYOU");
-}
-
 namespace godot {
 
 	class gdexample : public Sprite {
@@ -46,7 +41,6 @@ namespace godot {
 		speed = 2;
 		start_pos = get_position();
 		fusion::pConsole->RegisterCVar("speed", "speed of the sprite", ECVarFlags::Null, &speed, 0);
-		fusion::pConsole->RegisterCommand("helpless", "im am helpless", ECVarFlags::Null, make_command<im_helpless>());
 		fusion::pConsole->EnqueueCommand("wait.seconds 1; speed 3; helpless");
 	}
 
