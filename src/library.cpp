@@ -3,6 +3,7 @@
 
 #include "FusionConsole.hpp"
 #include "ConsoleBindings.hpp"
+#include "ConsoleUI.hpp"
 
 fusion::Console* fusion::pConsole = nullptr;
 
@@ -40,8 +41,7 @@ namespace godot {
 		time_passed = 0.0;
 		speed = 2;
 		start_pos = get_position();
-		fusion::pConsole->RegisterCVar("speed", "speed of the sprite", ECVarFlags::Null, &speed, 0);
-		fusion::pConsole->EnqueueCommand("wait.seconds 1; speed 3; helpless");
+		fusion::pConsole->RegisterVariable("speed", "speed of the sprite", ECVarFlags::Null, &speed, 0);
 	}
 
 	void gdexample::_process(float delta) {
@@ -57,12 +57,10 @@ namespace godot {
 	}
 }
 
-using fusion::Console;
-
 extern "C" void GDN_EXPORT godot_gdnative_init(godot_gdnative_init_options* o) {
-#define MAKE_COMMAND(TargetType, Method, ThisPtr) make_command<TargetType, &TargetType::Method>(ThisPtr)
+
 	godot::Godot::gdnative_init(o);
-	
+
 	fusion::pConsole = new fusion::Console();
 }
 
@@ -73,9 +71,12 @@ extern "C" void GDN_EXPORT godot_gdnative_terminate(godot_gdnative_terminate_opt
 	delete fusion::pConsole;
 	fusion::pConsole = nullptr;
 }
-
 extern "C" void GDN_EXPORT godot_nativescript_init(void* handle) {
+
 	godot::Godot::nativescript_init(handle);
 	godot::register_class<godot::gdexample>();
 	godot::register_class<godot::ConsoleBindings>();
+	godot::register_class<godot::CmdArgs>();
+	godot::register_class<godot::ConsoleUI>();
+	
 }

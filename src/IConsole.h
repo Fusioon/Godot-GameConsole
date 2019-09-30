@@ -1,6 +1,6 @@
 #pragma once
 
-enum class ECVarType : char
+enum class ECVarType : int8_t
 {
 	Invalid = 0,
 	Bool,
@@ -8,31 +8,75 @@ enum class ECVarType : char
 	Float,
 	String,
 	Int64,
+	Command
 };
 
-enum class ECVarFlags : uint32_t
+enum class ECVarFlags : int32_t
 {
 	Null = 0x00000000,
 	Save = 0x00000001,
 	Cheat = 0x00000002,
 };
 
+enum class ELogType : int8_t
+{
+	Null,
+	Success,
+	Warning,
+	Error,
+	Exception,
+	MAX
+};
+
+#include <type_traits>
+
+template <typename T>
+struct EnumUtils {
+	//static_assert(std::is_enum<T>::value);
+	using underlying_type = typename std::underlying_type<T>::type;
+
+	static underlying_type to_underlying(T value) {
+		return static_cast<underlying_type>(value);
+	}
+	static T to_enum(underlying_type value) {
+		return static_cast<T>(value);
+	}
+};
+
+struct IConsoleArgumentAutoComplete {
+	virtual ~IConsoleArgumentAutoComplete() {}
+	
+	virtual size_t count() = 0;
+	virtual bool get_value(const godot::String& input, godot::String& result) const = 0;
+};
+
 struct CmdExecArgs
 {
-	CmdExecArgs(const godot::String& cmdline, const godot::String* args, const size_t count) :
-		m_cmdline(cmdline),
+	CmdExecArgs(const godot::String& line, const godot::String* args, const size_t count) :
+		line(line),
 		m_args(args),
-		m_count(count)
+		count(count)
 	{ }
 
-	const size_t count() const { return m_count; }
+	const size_t count;
+	const godot::String& line;
+
 	const godot::String& arg(size_t i) const { return m_args[i]; }
 	const godot::String& operator[](size_t i) const { return arg(i); }
-	const godot::String& cmdline() const { return m_cmdline; }
+	godot::String line_remove_command() const {
+		godot::String cmd_name = arg(0);
+		int i = cmd_name.length();
+		while (i < line.length() && is_whitespace(line[i])) {
+			++i;
+		}
+		if (i < line.length()) {
+			return line.substr(i, line.length());
+		}
+		return godot::String();
+	}
 private:
+	bool is_whitespace(wchar_t c) const { return c == '\t' || c == ' '; }
 	const godot::String* m_args;
-	const size_t m_count;
-	const godot::String& m_cmdline;
 };
 
 struct ICVar
@@ -49,8 +93,17 @@ struct ICVar
 	virtual float GetValueFloat() const = 0;
 	virtual godot::String GetValueString() const = 0;
 
-	virtual bool Execute(const CmdExecArgs& cmdLine) const = 0;
+	virtual bool Execute(const CmdExecArgs& cmdLine) = 0;
 };
+
+struct IConsoleUI
+{
+	virtual void Open() = 0;
+	virtual void Close() = 0;
+	virtual void PrintLine(const godot::String& text, ELogType log_type) = 0;
+	virtual void Clear() = 0;
+};
+
 
 template <typename T>
 struct ConPropMethods
@@ -106,8 +159,8 @@ template <typename T, T(*Getter)(), void(*Setter)(T)>
 ConPropMethods<T> make_property()
 {
 	ConPropMethods<T> methods;
-	methods.getter = &ConPropMethods<T>::getterNoTarget<Getter>;
-	methods.setter = &ConPropMethods<T>::setterNoTarget<Setter>;
+	methods.getter = &ConPropMethods<T>::template getterNoTarget<Getter>;
+	methods.setter = &ConPropMethods<T>::template setterNoTarget<Setter>;
 	return methods;
 }
 
@@ -146,8 +199,8 @@ ConPropMethods<T> make_property(Obj* target)
 {
 	ConPropMethods<T> methods;
 	methods.target = target;
-	methods.getter = &ConPropMethods<T>::getterWithTarget<Obj, Getter>;
-	methods.setter = &ConPropMethods<T>::setterWithTarget<Obj, Setter>;
+	methods.getter = &ConPropMethods<T>::template getterWithTarget<Obj, Getter>;
+	methods.setter = &ConPropMethods<T>::template setterWithTarget<Obj, Setter>;
 	return methods;
 }
 template <typename Obj, typename bool(Obj::*Getter)(), typename void(Obj::*Setter)(bool)>

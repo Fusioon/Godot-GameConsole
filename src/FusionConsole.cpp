@@ -1,9 +1,34 @@
 #include "Godot.hpp"
 #include "FusionConsole.hpp"
 #include "gdnative_api_struct.gen.h"
+#include <algorithm>
+#include "File.hpp"
+#include "Directory.hpp"
 using namespace fusion;
 
-const size_t Console::CommandHistory::k_max_history_size = 64;
+//godot::String Console::CVarNameFinder::s_help = "CVarNameFinder";
+
+struct SExecAutocomplete : IConsoleArgumentAutoComplete {
+
+	SExecAutocomplete() {
+		m_dir = godot::Directory::_new();
+		auto err = m_dir->open("res://config/");
+		if (err == godot::Error::OK) {
+
+		}
+	}
+
+	virtual bool Autocomplete(const godot::String& input, godot::String& result) const {
+		result = m_dir->get_next();
+		if (result.begins_with(input)) {
+
+		}
+		return result.empty();
+	}
+
+private:
+	godot::Directory* m_dir;
+};
 
 template <typename T>
 constexpr T* memnew()
@@ -26,7 +51,7 @@ constexpr T* memnew(T&& obj)
 template <typename T>
 constexpr T* memnew_arr(size_t size)
 {
-	return static_cast<T*>(godot::api->godot_alloc(sizeof(T) * size));
+	return new (static_cast<T*>(godot::api->godot_alloc(sizeof(T) * size))) T[size];
 }
 
 template <typename T>
@@ -41,8 +66,13 @@ constexpr void memdel_arr(T* target, size_t size)
 {
 	for (T* it = target; it != target + size; ++it) it->~T();
 	godot::api->godot_free(target);
+	new T[size];
 }
 
+template <typename _Ty>
+constexpr _Ty clamp(_Ty current, _Ty min, _Ty max) {
+	return current < min ? min : current > max ? max : current;
+}
 
 bool is_whitespace(wchar_t c)
 {
@@ -60,11 +90,11 @@ void skip_quotes(const godot::String& cmdLine, int32_t& pos)
 {
 	while (pos < cmdLine.length())
 	{
-		if (cmdLine[pos] == '\"' && cmdLine[pos-1] != '\\') {
+		++pos;
+		if (cmdLine[pos] == '\"' && cmdLine[pos - 1] != '\\') {
 			++pos;
 			break;
 		}
-		++pos;
 	}
 }
 
@@ -103,7 +133,7 @@ bool tokenize(const godot::String& cmdLine, godot::String& result, int32_t& pos)
 		skip_whitespace(cmdLine, pos);
 		if (pos == cmdLine.length()) break;
 
-		
+
 		if (cmdLine[pos] == '\"')
 		{
 			result = (parse_quotes(cmdLine, pos));
@@ -116,14 +146,13 @@ bool tokenize(const godot::String& cmdLine, godot::String& result, int32_t& pos)
 		}
 	}
 
-	
+
 	return false;
 }
 
-bool break_multiple_commands(const godot::String input, godot::String& result, int32_t& pos) 
+bool break_multiple_commands(const godot::String input, godot::String& result, int32_t& pos)
 {
 	constexpr char BREAK_CHAR = ';';
-	bool in_quotes = false;
 	int32_t start_pos = pos;
 	bool whitespace_only = true; // when we check if string has only whitespaces we can prevent unnecessary allocations
 
@@ -131,10 +160,11 @@ bool break_multiple_commands(const godot::String input, godot::String& result, i
 	{
 		if (input[pos] == '\"')
 		{
+			auto start = pos;
 			skip_quotes(input, pos);
 			continue;
 		}
-		if (input[pos] == BREAK_CHAR && !in_quotes)
+		if (input[pos] == BREAK_CHAR)
 		{
 			auto length = pos - start_pos;
 			if (length > 0 && !whitespace_only)
@@ -170,6 +200,8 @@ bool break_multiple_commands(const godot::String input, godot::String& result, i
 
 Console::CommandHistory::CommandHistory() :
 	//m_history(memnew_arr<godot::String>(k_max_history_size+1))
+	history_next_idx(0),
+	history_selected_idx(0),
 	m_history(new godot::String[k_max_history_size + 1])
 {
 	m_history[k_max_history_size] = godot::String();
@@ -178,10 +210,9 @@ Console::CommandHistory::CommandHistory() :
 Console::CommandHistory::~CommandHistory()
 {
 	delete[] m_history;
-	//memdel_arr(m_history, k_max_history_size+1);
 }
 
-void Console::CommandHistory::add(const godot::String& str) 
+void Console::CommandHistory::add(const godot::String& str)
 {
 	m_history[history_next_idx++ % k_max_history_size] = str;
 	history_selected_idx = 0;
@@ -191,13 +222,13 @@ void Console::CommandHistory::add(const godot::String& str)
 	}
 }
 
-const godot::String& Console::CommandHistory::get() 
+const godot::String& Console::CommandHistory::get()
 {
+	history_selected_idx = clamp(history_selected_idx, 0, std::min(history_next_idx, k_max_history_size));
 	if (history_selected_idx <= 0) {
 		return m_history[k_max_history_size];
 	}
-	size_t min = std::min(history_next_idx, k_max_history_size);
-	history_selected_idx = history_selected_idx > min ? min : history_selected_idx;
+
 	return m_history[(history_next_idx - history_selected_idx) % k_max_history_size];
 }
 
@@ -216,26 +247,33 @@ const godot::String& Console::CommandHistory::down()
 
 Console::Console()
 {
-	RegisterProperty("wait.seconds", "waits seconds before executing next command in queue.", ECVarFlags::Null,
-		make_property<Console, &Console::get_wait_seconds, &Console::set_wait_seconds>(this), 0);
+	RegisterVariable("wait.seconds", "waits for level load before executing next command in queue.", ECVarFlags::Null, &wait_seconds, 0);
+	RegisterVariable("wait.frames", "waits for level load before executing next command in queue.", ECVarFlags::Null, &wait_frames, 0);
+	RegisterVariable("wait.sceneload", "waits for level load before executing next command in queue.", ECVarFlags::Null, &wait_level_load, false);
+	RegisterCommand("help", "", ECVarFlags::Null, make_command<Console, &Console::help_command>(this));
+	RegisterCommand("close", "", ECVarFlags::Null, make_command < Console, &Console::Close>(this));
+	RegisterCommand("print", "", ECVarFlags::Null, make_command < Console, &Console::print_command>(this));
+	RegisterCommand("cmds", "", ECVarFlags::Null, make_command < Console, &Console::commands_command>(this));
+	RegisterCommand("vars", "", ECVarFlags::Null, make_command < Console, &Console::variables_command>(this));
+	RegisterCommand("cls", "", ECVarFlags::Null, make_command < Console, &Console::clear_command>(this));
+	RegisterCommand("exec", "", ECVarFlags::Null, make_command < Console, &Console::execute_command>(this));
 }
 
 Console::~Console()
 {
 	for (auto it : m_cvars)
 	{
-		delete it;
+		delete it.second;
 	}
 	m_cvars.clear();
 }
 
-bool Console::UnregisterCVar(const godot::String& name)
+bool Console::UnRegisterCVar(const godot::String& name)
 {
-	auto finder = CVarNameFinder(name);
-	auto result = m_cvars.find(&finder);
+	auto result = m_cvars.find(name);
 	if (result != m_cvars.end())
 	{
-		delete* result;
+		delete result->second;
 		m_cvars.erase(result);
 		return true;
 	}
@@ -244,17 +282,16 @@ bool Console::UnregisterCVar(const godot::String& name)
 
 ICVar* Console::GetCVar(const godot::String& name) const
 {
-	auto finder = CVarNameFinder(name);
-	auto result = m_cvars.find(&finder);
+	auto result = m_cvars.find(name);
 	if (result != m_cvars.end()) {
-		return *result;
+		return result->second;
 	}
 	return nullptr;
 }
 
 void Console::EnqueueCommand(const godot::String& cmdLine)
 {
-	// TODO -> add line to history
+	m_history.add(cmdLine);
 	EnqueueCommandNoHistory(cmdLine);
 }
 
@@ -262,7 +299,7 @@ void Console::EnqueueCommandNoHistory(const godot::String& cmdLine)
 {
 	godot::String result;
 	int32_t pos = 0;
-	while(break_multiple_commands(cmdLine, result, pos))
+	while (break_multiple_commands(cmdLine, result, pos))
 	{
 		m_command_queue.emplace(result);
 	}
@@ -309,7 +346,7 @@ bool Console::UpdateWait(float dt)
 }
 
 void Console::Update(float dt)
-{	
+{
 	while (!UpdateWait(dt) && !m_command_queue.empty()) {
 		auto& command = m_command_queue.front();
 		godot::Godot::print(command);
@@ -317,7 +354,7 @@ void Console::Update(float dt)
 			godot::Godot::print("Error while executing \"" + command + "\"");
 		}
 		m_command_queue.pop();
-	}	
+	}
 }
 
 bool Console::ExecuteString_Impl(const godot::String& cmdLine)
@@ -325,137 +362,340 @@ bool Console::ExecuteString_Impl(const godot::String& cmdLine)
 	int32_t pos = 0;
 	godot::String arg;
 	if (tokenize(cmdLine, arg, pos)) {
-		auto finder = CVarNameFinder(arg);
-		auto result = m_cvars.find(&finder);
+		auto result = m_cvars.find(arg);
 		if (result != m_cvars.end()) {
 			std::vector<godot::String> tmp;
+			tmp.push_back(arg);
 			while (tokenize(cmdLine, arg, pos)) {
 				tmp.push_back(arg);
 			}
-			if (tmp.size() == 0) {
-				CmdExecArgs args(cmdLine, nullptr, 0);
-				return (*result)->Execute(args);
+			ICVar* pCVar = result->second;
+			if (pCVar->GetType() != ECVarType::Command && tmp.size() == 1) {
+				godot::Godot::print("{0} {1}", pCVar->GetName(), pCVar->GetValueString());
+				return true;
+			}
+			if (tmp.size() == 2 && tmp[1] == "?") {
+				if (pCVar->GetType() != ECVarType::Command) {
+					godot::Godot::print("{0} - {1}", pCVar->GetName(), pCVar->GetHelp());
+				}
+				else {
+					godot::Godot::print("{0} {1} - {2}", pCVar->GetName(), pCVar->GetValueString(), pCVar->GetHelp());
+				}
+
+				return true;
 			}
 
 			CmdExecArgs args(cmdLine, &tmp[0], tmp.size());
-			return (*result)->Execute(args);
+			return pCVar->Execute(args);
 		}
 		else {
 			godot::Godot::print("Failed to find \"" + arg + "\" in registered cvars");
+			PrintError("Failed to find \"" + arg + "\" in registered cvars");
 		}
 	}
 	else {
 		godot::Godot::print("Failed to parse line: \"" + cmdLine + "\"");
+		PrintError("Failed to parse line: \"" + cmdLine + "\"");
+
 	}
-	return false;
+	return true;
 }
 
 
-bool Console::CanRegisterName(const godot::String& name)
+ICVar* Console::CanRegisterName(const godot::String& name)
 {
-	auto finder = CVarNameFinder(name);
-	auto result = m_cvars.find(&finder);
-//#if 1 || _DEBUG
+	auto result = m_cvars.find(name);
 	if (result != m_cvars.end()) {
-		godot::Godot::print_error("CVar with name \"" + name + "\" is already defined", __func__, __FILE__, __LINE__);
+		PrintWarning(godot::String("[DUPLICATE] variable [{0}] is already registered.").format(godot::Array::make(name)));
+		return result->second;
 	}
-//#endif
-	return (result == m_cvars.end()); 
+	return nullptr;
 }
 
-ICVar* Console::RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, bool* value, bool default_value)
+ICVar* Console::RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, bool* value, bool default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConVarBool(name, help, flags, value, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConVarBool(name, help, flags, value, default_value);
+	m_cvars[name] = cvar;
+	return cvar;
 }
-ICVar* Console::RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, int32_t* value, int32_t default_value)
+ICVar* Console::RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, int32_t* value, int32_t default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConVarInt32(name, help, flags, value, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConVarInt32(name, help, flags, value, default_value);
+	m_cvars[name] = cvar;
+	return cvar;
 }
-ICVar* Console::RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, int64_t* value, int64_t default_value)
+ICVar* Console::RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, int64_t* value, int64_t default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConVarInt64(name, help, flags, value, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConVarInt64(name, help, flags, value, default_value);
+	m_cvars[name] = cvar;
+	return cvar;
 }
-ICVar* Console::RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, float* value, float default_value)
+ICVar* Console::RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, float* value, float default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConVarFloat(name, help, flags, value, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConVarFloat(name, help, flags, value, default_value);
+	m_cvars[name] = cvar;
+	return cvar;
 }
-ICVar* Console::RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, godot::String* value, const godot::String& default_value)
+ICVar* Console::RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, godot::String* value, const godot::String& default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConVarString(name, help, flags, value, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConVarString(name, help, flags, value, default_value);
+	m_cvars[name] = cvar;
+	return cvar;
 }
 
 ICVar* Console::RegisterCommand(const godot::String& name, const godot::String& help, ECVarFlags flags, SConCmdMethod fn)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConCmd(name, help, flags, fn)).first);
-
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConCmd(name, help, flags, fn);
+	return m_cvars[name] = cvar;;
 }
 
 
 ICVar* Console::RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<bool> methods, bool default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConPropBool(name, help, flags, methods, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConPropBool(name, help, flags, methods, default_value);
+	return m_cvars[name] = cvar;;
 }
 
 ICVar* Console::RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<int32_t> methods, int32_t default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConPropInt32(name, help, flags, methods, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConPropInt32(name, help, flags, methods, default_value);
+	return m_cvars[name] = cvar;;
 }
 
 ICVar* Console::RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<int64_t> methods, int64_t default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConPropInt64(name, help, flags, methods, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConPropInt64(name, help, flags, methods, default_value);
+	return m_cvars[name] = cvar;;
 }
 
 ICVar* Console::RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<float> methods, float default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConPropFloat(name, help, flags, methods, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConPropFloat(name, help, flags, methods, default_value);
+	return m_cvars[name] = cvar;;
 }
 
 ICVar* Console::RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<godot::String> methods, const godot::String& default_value)
 {
-	if (CanRegisterName(name)) {
-		return *(m_cvars.insert(new SConPropString(name, help, flags, methods, default_value)).first);
+	auto cvar = CanRegisterName(name);
+	if (cvar) {
+		return cvar;
 	}
-	return nullptr;
+
+	cvar = new SConPropString(name, help, flags, methods, default_value);
+	return m_cvars[name] = cvar;;
+}
+
+ICVar* Console::RegisterCVar(ICVar* pCVar)
+{
+	auto cvar = CanRegisterName(pCVar->GetName());
+	if (cvar) {
+		return cvar;
+	}
+	return m_cvars[pCVar->GetName()] = pCVar;
 }
 
 
+void Console::Open() {
+	if (m_pUi) m_pUi->Open();
+}
+void Console::Close() {
+	if (m_pUi) m_pUi->Close();
+
+}
+void Console::PrintLine(const godot::String& text, ELogType type) {
+	if (m_pUi) m_pUi->PrintLine(text, type);
+}
+
+void Console::PrintInfo(const godot::String& text) {
+	PrintLine(text, ELogType::Null);
+}
+
+void Console::PrintSuccess(const godot::String& text) {
+	PrintLine(text, ELogType::Success);
+}
+
+void Console::PrintWarning(const godot::String& text) {
+	PrintLine(text, ELogType::Warning);
+}
+
+void Console::PrintError(const godot::String& text) {
+	PrintLine(text, ELogType::Error);
+}
+
+void Console::PrintException(const godot::String& text) {
+	PrintLine(text, ELogType::Exception);
+}
+
+
+void Console::SetUI(IConsoleUI* pUi) {
+	m_pUi = pUi;
+}
+//
+//Console::Autocomplete Console::GetAutoComplete(const godot::String& value) {
+//	return Autocomplete(m_cvars.begin(), m_cvars.end(), value);
+//}
+
+size_t Console::GetSuggestions(const godot::String& prefix, ICVar** target_arr, size_t target_size) {
+	size_t count = 0;
+	for (auto c : m_cvars) {
+		if (count >= target_size) {
+			break;
+		}
+		if (c.first.begins_with(prefix)) {
+			target_arr[count] = c.second;
+			++count;
+		}
+	}
+	return count;
+}
 
 ///-----
 void Console::set_wait_seconds(float value) {
-	wait_seconds = value > 0 ? value : 0;
-	godot::Godot::print("waiting...");
+	wait_seconds = std::max(0.0f, value);
 }
 float Console::get_wait_seconds() {
 	return wait_seconds;
+}
+
+int Console::get_wait_frames() {
+	return wait_frames;
+}
+void Console::set_wait_frames(int value) {
+	wait_frames = std::max(0, value);
+}
+
+bool Console::get_wait_level_load() {
+	return wait_level_load;
+}
+void Console::set_wait_level_load(bool value) {
+	wait_level_load = value;
+}
+
+
+void Console::help_command(const CmdExecArgs& args) {
+	godot::String filter = godot::String();
+	if (args.count > 1) {
+		filter = args[1];
+	}
+
+	auto print_cvar = [this](ICVar* pCvar) -> void {
+		auto name = pCvar->GetName();
+		auto help = pCvar->GetHelp();
+		if (help.empty()) {
+			PrintInfo(name);
+		}
+		else {
+			PrintInfo(godot::String("{0} - {1}").format(godot::Array::make(pCvar->GetName(), pCvar->GetHelp())));
+		}
+	};
+
+	if (filter.empty()) {
+		for (auto cvar : m_cvars) {
+			print_cvar(cvar.second);
+		}
+	}
+	else {
+		for (auto cvar : m_cvars) {
+			auto name = cvar.first;
+			if (name.find(filter) < 0) {
+				continue;
+			}
+			print_cvar(cvar.second);
+		}
+	}
+}
+
+void Console::print_command(const CmdExecArgs& args) {
+	auto line = args.line_remove_command();
+	auto quote = godot::String("\"");
+	if (line.length() >= 2 && line.begins_with(quote) && line.ends_with(quote)) {
+		PrintInfo(line.substr(1, line.length() - 2));
+	}
+	else {
+		PrintInfo(line);
+	}
+}
+void Console::commands_command(const CmdExecArgs& args) {
+
+}
+void Console::variables_command(const CmdExecArgs& args) {
+
+}
+
+void Console::clear_command(const CmdExecArgs& args) {
+	if (m_pUi) m_pUi->Clear();
+}
+
+void Console::execute_command(const CmdExecArgs& args) {
+	// TODO
+	if (args.count >= 2) {
+		auto file_path = args.line_remove_command();
+		godot::File* f = godot::File::_new();
+
+		if (f->file_exists(file_path)) {
+			auto err = f->open(file_path, godot::File::READ);
+			if (err == godot::Error::OK) {
+				while (!f->eof_reached()) {
+					auto line = f->get_line();
+					EnqueueCommandNoHistory(line);
+				}
+				f->close();
+			}
+			else {
+				if (err == godot::Error::ERR_FILE_NOT_FOUND) {
+					PrintError("Failed to execute file \"" + file_path + "\". FILE_NOT_FOUND");
+				}
+			}
+		}
+	}
 }

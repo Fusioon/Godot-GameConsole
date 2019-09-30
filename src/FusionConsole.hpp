@@ -2,7 +2,7 @@
 
 #include "Godot.hpp"
 
-#include <unordered_set>
+#include <unordered_map>
 #include <queue>
 
 #include "IConsole.h"
@@ -65,11 +65,11 @@ namespace fusion {
 			m_help(help),
 			m_flags(flags)
 		{}
+		virtual ~CVarBase() {  }
 		virtual const godot::String& GetName() const override { return m_name; }
 		virtual const godot::String& GetHelp() const override { return m_help; }
 		virtual ECVarFlags GetFlags() const override { return m_flags; }
 		virtual ECVarType GetType() const override { return ECVarType::Invalid; }
-		
 	protected:
 		godot::String m_name;
 		godot::String m_help;
@@ -90,10 +90,10 @@ namespace fusion {
 		virtual float GetValueFloat() const = 0;
 		virtual godot::String GetValueString() const = 0;
 
-		virtual bool Execute(const CmdExecArgs& cmdLine) const override
+		virtual bool Execute(const CmdExecArgs& args) override
 		{
 			T tmp;
-			if (cmdLine.count() == 1 && tryParse(cmdLine[0], tmp))
+			if (args.count > 1 && tryParse(args[1], tmp))
 			{
 				*m_pValue = tmp;
 				return true;
@@ -197,10 +197,10 @@ namespace fusion {
 			m_setter(methods.setter)
 		{ }
 
-		virtual bool Execute(const CmdExecArgs& cmdLine) const override
+		virtual bool Execute(const CmdExecArgs& args) override
 		{
 			T tmp;
-			if (cmdLine.count() == 1 && tryParse(cmdLine[0], tmp))
+			if (args.count > 1 && tryParse(args[1], tmp))
 			{
 				if (m_setter)
 				{
@@ -288,12 +288,14 @@ namespace fusion {
 			m_function(cmdfn.fn)
 		{}
 
+		virtual ECVarType GetType() const override { return ECVarType::Command; }
+
 		virtual bool GetValueBool() const override { return false; }
 		virtual int32_t GetValueInt32() const override { return 0; }
 		virtual int64_t GetValueInt64() const override { return 0; }
 		virtual float GetValueFloat() const override { return 0; }
 		virtual godot::String GetValueString() const override { return godot::String("Command"); }
-		virtual bool Execute(const CmdExecArgs& args) const override
+		virtual bool Execute(const CmdExecArgs& args) override
 		{
 			return m_function(m_pTarget, args);
 		}
@@ -302,103 +304,32 @@ namespace fusion {
 		Function m_function;
 	};
 
-
 	class Console
 	{
 		struct equality
 		{
-			typedef ICVar* argument_type;
+			typedef godot::String argument_type;
 			//typedef std::size_t result_type;
 			bool operator()(const argument_type& lhs, const argument_type& rhs) const noexcept
 			{
-				return lhs->GetName() == rhs->GetName();
+				return lhs.nocasecmp_to(rhs) == 0;
 			}
 		};
 
 		struct hash
 		{
-			typedef ICVar* argument_type;
+			typedef godot::String argument_type;
 			typedef std::size_t result_type;
 			result_type operator()(argument_type const& s) const noexcept
 			{
-				return s->GetName().hash();
+				return s.hash();
 			}
 		};
 
-		struct CVarNameFinder : public ICVar
-		{
-			CVarNameFinder(const godot::String& name) : m_name(name) { }
-			~CVarNameFinder() {}
-			virtual const godot::String& GetName() const override { return m_name; }
-			virtual const godot::String& GetHelp() const { return godot::String(); }
-			virtual ECVarFlags GetFlags() const { return ECVarFlags::Null; }
-			virtual ECVarType GetType() const { return ECVarType::Invalid; }
-
-			virtual bool GetValueBool() const { return false; }
-			virtual int32_t GetValueInt32() const { return 0; }
-			virtual int64_t GetValueInt64() const { return 0; }
-			virtual float GetValueFloat() const { return 0; }
-			virtual godot::String GetValueString() const { return godot::String(); }
-
-			virtual bool Execute(const CmdExecArgs& cmdLine) const override { godot::Godot::print("CVarNameFinder instance! not supposed to execute on this"); return false; }
-		private:
-			const godot::String& m_name;
-		};
-
-	
-
 	public:
-		friend class godot::ConsoleBindings;
-
-		Console();
-		~Console();
-
-		ICVar* RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, bool* value, bool default_value);
-		ICVar* RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, int32_t* value, int32_t default_value);
-		ICVar* RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, int64_t* value, int64_t default_value);
-		ICVar* RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, float* value, float default_value);
-		ICVar* RegisterCVar(const godot::String& name, const godot::String& help, ECVarFlags flags, godot::String* value, const godot::String& default_value);
-
-		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<bool> methods, bool default_value);
-		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<int32_t> methods, int32_t default_value);
-		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<int64_t> methods, int64_t default_value);
-		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<float> methods, float default_value);
-		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<godot::String> methods, const godot::String& default_value);
-
-		ICVar* RegisterCommand(const godot::String& name, const godot::String& help, ECVarFlags flags, SConCmdMethod fn);
-
-		bool UnregisterCVar(const godot::String& name);
-		ICVar* GetCVar(const godot::String& name) const;
-		
-		void EnqueueCommand(const godot::String& cmd);
-		void EnqueueCommandNoHistory(const godot::String& cmd);
-		void ExecuteString(const godot::String& cmd, bool silent, bool deferred);
-
-		
-		size_t CVarCount() const { return m_cvars.size(); }
-
-		float get_wait_seconds();
-		void set_wait_seconds(float value);
-
-	private:
-		void Update(float dt);
-		bool UpdateWait(float dt);
-		bool ExecuteString_Impl(const godot::String& cmd);
-		bool CanRegisterName(const godot::String& name);
-
-		std::unordered_set<ICVar*, hash, equality> m_cvars;
-		std::queue<godot::String> m_command_queue;
-		
-		
-
-		int wait_frames;
-		float wait_seconds;
-		bool wait_level_load;
-		size_t m_max_lines;
-
 		struct CommandHistory
 		{
-			static const size_t k_max_history_size;
+			static constexpr int k_max_history_size = 64;
 
 			CommandHistory();
 			~CommandHistory();
@@ -410,12 +341,106 @@ namespace fusion {
 
 		private:
 			godot::String* m_history;
-			size_t history_next_idx;
-			size_t history_selected_idx;
+			int history_next_idx;
+			int history_selected_idx;
 		};
+
+		struct Autocomplete
+		{
+			
+		private:
+			ICVar* cvars;
+		};
+
+		friend class godot::ConsoleBindings;
+
+		Console();
+		~Console();
+
+		ICVar* RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, bool* value, bool default_value);
+		ICVar* RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, int32_t* value, int32_t default_value);
+		ICVar* RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, int64_t* value, int64_t default_value);
+		ICVar* RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, float* value, float default_value);
+		ICVar* RegisterVariable(const godot::String& name, const godot::String& help, ECVarFlags flags, godot::String* value, const godot::String& default_value);
+
+		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<bool> methods, bool default_value);
+		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<int32_t> methods, int32_t default_value);
+		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<int64_t> methods, int64_t default_value);
+		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<float> methods, float default_value);
+		ICVar* RegisterProperty(const godot::String& name, const godot::String& help, ECVarFlags flags, ConPropMethods<godot::String> methods, const godot::String& default_value);
+
+		ICVar* RegisterCommand(const godot::String& name, const godot::String& help, ECVarFlags flags, SConCmdMethod fn);
+
+		bool UnRegisterCVar(const godot::String& name);
+		ICVar* GetCVar(const godot::String& name) const;
+		
+		void EnqueueCommand(const godot::String& cmd);
+		void EnqueueCommandNoHistory(const godot::String& cmd);
+		void ExecuteString(const godot::String& cmd, bool silent, bool deferred);
+
+		
+		size_t CVarCount() const { return m_cvars.size(); }
+
+		CommandHistory& GetHistory() { return m_history; }
+
+
+		void Open();
+		void Close();
+		void PrintLine(const godot::String& text, ELogType type);
+		void PrintInfo(const godot::String& text);
+		void PrintSuccess(const godot::String& text);
+		void PrintWarning(const godot::String& text);
+		void PrintError(const godot::String& text);
+		void PrintException(const godot::String& text);
+
+		void SetUI(IConsoleUI* pUi);
+
+	
+		void RegisterAutoComplete(const godot::String& sVarOrCommand, IConsoleArgumentAutoComplete* pArgAutoComplete);
+		void UnRegisterAutoComplete(const godot::String& sVarOrCommand);
+		void ResetAutoCompletion();
+
+		size_t GetSuggestions(const godot::String& prefix, ICVar** target_arr, size_t target_size);
+
+	private:
+		ICVar* RegisterCVar(ICVar* pCVar);
+
+		void Update(float dt);
+		bool UpdateWait(float dt);
+		bool ExecuteString_Impl(const godot::String& cmd);
+		ICVar* CanRegisterName(const godot::String& name);
+
+		std::unordered_map<godot::String, ICVar*, hash, equality> m_cvars;
+		std::unordered_map<godot::String, IConsoleArgumentAutoComplete*, hash, equality> m_argAutoComplete;
+
+		std::queue<godot::String> m_command_queue;
+		
+
+		int wait_frames;
+		float wait_seconds;
+		bool wait_level_load;
+
+		float get_wait_seconds();
+		void set_wait_seconds(float value);
+
+		int get_wait_frames();
+		void set_wait_frames(int value);
+
+		bool get_wait_level_load();
+		void set_wait_level_load(bool value);
+
+		void help_command(const CmdExecArgs& args);
+		void print_command(const CmdExecArgs& args);
+		void commands_command(const CmdExecArgs& args);
+		void variables_command(const CmdExecArgs& args);
+		void clear_command(const CmdExecArgs& args);
+		void execute_command(const CmdExecArgs& args);
+		size_t m_max_lines;
+
 		CommandHistory m_history;
+		IConsoleUI* m_pUi;
 	};
 
 	extern class Console* pConsole;
-}
+};
 
